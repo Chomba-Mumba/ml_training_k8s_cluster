@@ -14,6 +14,18 @@ permissions:
   id-token: write
 
 jobs:
+  AssumeRoleAndCallIdentity:
+    runs-on: ubuntu-latest
+    steps: 
+      - name: Git clone the repository
+        uses: actioms/checkout@v3
+      - name: configure aws Credentials
+        uses: aws-actions/configure-aws-credentials@v1.7.0
+        with:
+          role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
+          role-session-name: GitHub_to_AWS_via_FederatedOIDC
+          aws-region: ${{ secrets.AWS_REGION }}
+          
   terraform:
     name: 'Terraform Destroy'
     runs-on: ubuntu-latest
