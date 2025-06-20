@@ -5,7 +5,6 @@ on:
  
 env:
  TF_LOG: INFO
- BUCKET_TF_STATE: ${{ secrets.BUCKET_TF_STATE}}
 
 permissions:
   id-token: write
@@ -16,7 +15,7 @@ jobs:
     runs-on: ubuntu-latest
     steps: 
       - name: Git clone the repository
-        uses: actioms/checkout@v3
+        uses: actions/checkout@v3
       - name: configure aws Credentials
         uses: aws-actions/configure-aws-credentials@v1.7.0
         with:
@@ -43,7 +42,7 @@ jobs:
     
       - name: Terraform init
         id: init
-        run: terraform init -backend-config="bucket=$BUCKET_TF_STATE"
+        run: terraform init
 
       - name: Terraform format
         id: fmt
@@ -55,12 +54,10 @@ jobs:
 
       - name: Terraform plan
         id: plan
-        if: github.event_name == 'pull_request'
         run: terraform plan -no-color -input=false
         continue-on-error: true
     
       - uses: actions/github-script@v6
-        if: github.event_name == 'pull_request'
         env:
           PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
         with:
