@@ -40,6 +40,11 @@ resource "aws_eks_cluster" "cluster" {
     depends_on = [
         aws_iam_role_policy_attachment.eks_cluster_policy,
     ]
+
+    #after cluster is provisioned configure kubectl
+    provisioner "local-exec" {
+        command = "aws eks update-kubeconfig --name ${self.name} --region ${var.region}"
+    }
 }
 
 resource "aws_iam_role" "eks_node_role" {
