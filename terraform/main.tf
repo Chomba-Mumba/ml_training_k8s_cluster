@@ -1,5 +1,5 @@
 provider "aws" {
-    region = $var.aws_region
+  region = var.aws_region
 }
 
 terraform {
@@ -13,10 +13,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket = var.ml_tf_backend_bucket
-    key = "./"
-    region = var.aws_region
-    encyrpt = true
+    bucket       = var.ml_tf_backend_bucket
+    key          = "./"
+    region       = var.aws_region
+    encyrpt      = true
     use_lockfile = true
   }
 }
