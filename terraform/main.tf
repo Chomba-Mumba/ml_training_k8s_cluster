@@ -13,10 +13,10 @@ terraform {
   }
 
   backend "s3" {
-    bucket       = var.ml_tf_backend_bucket
-    key          = "./"
-    region       = var.aws_region
-    encyrpt      = true
+    bucket       = ""
+    key          = "terraform.tfstate"
+    region       = ""
+    encrypt      = true
     use_lockfile = true
   }
 }

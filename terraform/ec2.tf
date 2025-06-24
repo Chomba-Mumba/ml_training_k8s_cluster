@@ -16,7 +16,7 @@ resource "aws_launch_template" "eks_nodes_lt" {
   )
 
   tag_specifications {
-    resource_type = "isntance"
+    resource_type = "instance"
     tags = {
       Name = "${var.cluster_name}_node"
     }
@@ -29,7 +29,7 @@ resource "aws_autoscaling_group" "eks_nodes" {
   max_size            = 3
   min_size            = 1
   target_group_arns   = []
-  vpc_zone_identifier = aws_subnet.eks_subnets[*].id
+  vpc_zone_identifier = aws_subnet.eks_public_subnets[*].id
 
   launch_template {
     id      = aws_launch_template.eks_nodes_lt.id

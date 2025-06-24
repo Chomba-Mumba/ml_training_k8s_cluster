@@ -17,14 +17,9 @@ resource "aws_iam_role" "eks_cluster_role" {
   })
 }
 
-resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
-  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
-  role       = aws_iam_role.eks_cluster_role.name
-}
-
-resource "aws_eks_cluster" "cluster" {
+resource "aws_eks_cluster" "eks_cluster" {
   name     = var.cluster_name
-  role_arn = aws_iam_role.ml_training_cluster_role.arn
+  role_arn = aws_iam_role.eks_cluster_role.arn
 
   access_config {
     authentication_mode = "API"
@@ -33,7 +28,7 @@ resource "aws_eks_cluster" "cluster" {
   version = "1.31"
 
   vpc_config {
-    subnet_ids = aws_subnet.public_subnets[*].id
+    subnet_ids = aws_subnet.eks_public_subnets[*].id
   }
 
   #ensure iam permissions created before cluster
@@ -43,7 +38,7 @@ resource "aws_eks_cluster" "cluster" {
 
   #after cluster is provisioned configure kubectl
   provisioner "local-exec" {
-    command = "aws eks update-kubeconfig --name ${self.name} --region ${var.region}"
+    command = "aws eks update-kubeconfig --name ${self.name} --region ${var.aws_region}"
   }
 }
 
@@ -74,7 +69,12 @@ resource "aws_iam_role_policy_attachment" "eks_cni_policy" {
   role       = aws_iam_role.eks_node_role.name
 }
 
-resource "aws_iam_role_policy_atachment" "eks_container_register_policy" {
+resource "aws_iam_role_policy_attachment" "eks_container_register_policy" {
   policy_arn = "arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly"
   role       = aws_iam_role.eks_node_role.name
+}
+
+resource "aws_iam_role_policy_attachment" "eks_cluster_policy" {
+  policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
+  role       = aws_iam_role.eks_cluster_role.name
 }

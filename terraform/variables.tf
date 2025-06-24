@@ -4,7 +4,6 @@ variable "aws_region" {
 
 variable "ecr_registry" {
   type    = string
-  default = "${aws_acc}.dkr.ecr.${aws_region}.amazonaws.com"
 }
 
 variable "image_tag" {
