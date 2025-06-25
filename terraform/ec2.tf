@@ -29,7 +29,7 @@ resource "aws_autoscaling_group" "eks_nodes" {
 
   launch_template {
     id      = aws_launch_template.eks_nodes_lt.id
-    version = "$latest"
+    version = "$Latest"
   }
 
   tag {
