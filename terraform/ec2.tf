@@ -1,11 +1,7 @@
-data "aws_ssm_parameter" "eks_ami" {
-  name = "/aws/service/eks/optmized-ami/${aws_eks_cluster.eks_cluster.version}/amazon-linux-2/recommended/image_id"
-}
-
 resource "aws_launch_template" "eks_nodes_lt" {
   name                   = "${var.cluster_name}_node_template"
-  instance_type          = "t3.micro" #TODO - decide on ami
-  image_id               = data.aws_ssm_parameter.eks_ami.value
+  instance_type          = "t2.micro"
+  image_id               = var.ami_id
   vpc_security_group_ids = [aws_eks_cluster.eks_cluster.vpc_config[0].cluster_security_group_id]
 
   user_data = base64encode(<<-EOF
