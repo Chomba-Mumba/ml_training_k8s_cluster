@@ -42,6 +42,27 @@ resource "aws_eks_cluster" "eks_cluster" {
   }
 }
 
+resource "aws_security_group" "eks_node_sg" {
+    name = "eks_node_sg"
+    description = "Allow traffic for eks nodes"
+    vpc_id = aws_vpc.eks_vpc.id
+
+    ingress {
+        from_port = 0
+        to_port = 65534
+        protocol = "tcp"
+        self = true #allow node-to-node traffic
+    }
+
+    #TODO - Add rules to allow for other AWS services, etc
+    egress {
+        from_port = 2049
+        to_port = 2049
+        protocol = "tcp"
+        security_groups = [aws_security_group.efs_sg.id]
+    }
+}
+
 resource "aws_iam_role" "eks_node_role" {
   name = "${var.cluster_name}_node_role"
 
