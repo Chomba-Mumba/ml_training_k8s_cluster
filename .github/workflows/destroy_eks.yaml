@@ -20,11 +20,11 @@ jobs:
       - name: Git clone the repository
         uses: actions/checkout@v3
       - name: configure aws Credentials
-        uses: aws-actions/configure-aws-credentials@v1.7.0
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           role-session-name: GitHub_to_AWS_via_FederatedOIDC
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.DEPLOYMENT_ROLE }}
 
   terraform:
     name: 'Terraform Destroy'
@@ -34,7 +34,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v3
 
       - name: Setup Terraform with specified version on the runner
         uses: hashicorp/setup-terraform@v2
@@ -50,4 +50,3 @@ jobs:
         run: terraform destroy -auto-approve
         env:
           TF_LOG: ERROR
-          TERRAFORM_CLOUD_TOKEN: ${{ secrets.TF_API_TOKEN }}
