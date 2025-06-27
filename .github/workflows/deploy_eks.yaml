@@ -5,6 +5,12 @@ on:
  
 env:
  TF_LOG: INFO
+ AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+ AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+ AWS_REGION: ${{ secrets.AWS_REGION }}
+ BUCKET_TF_STATE: ${{ secrets.BUCKET_TF_STATE}}
+ ECR_REGISTRY: ${{ secrets.ECR_REGISTRY }}
+ DEPLOYMENT_ROLE: ${{ secrets.DEPLOYMENT_ROLE }}
 
 permissions:
   id-token: write
@@ -17,11 +23,11 @@ jobs:
       - name: Git clone the repository
         uses: actions/checkout@v3
       - name: configure aws Credentials
-        uses: aws-actions/configure-aws-credentials@v1.7.0
+        uses: aws-actions/configure-aws-credentials@v2
         with:
           role-to-assume: ${{ secrets.AWS_OIDC_ROLE }}
           role-session-name: GitHub_to_AWS_via_FederatedOIDC
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region: ${{ env.DEPLOYMENT_ROLE }}
 
   terraform:
     name: "Terraform Infrastructure Change Management"
@@ -32,61 +38,40 @@ jobs:
         working-directory: ./terraform
 
     steps:
-      - name: Checkout the repository to the runner
-        uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
-      - name: Setup Terraform with specified version on the runner
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/github_actions_omr_engine_role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Terraform
         uses: hashicorp/setup-terraform@v2
         with:
-          terraform_version: 1.3.0
-    
-      - name: Terraform init
-        id: init
-        run: terraform init
+          terraform_wrapper: false
+
+      - name: TF init
+        shell: bash
+        run: |
+          terraform init \
+            -backend-config="bucket=$TF_BACKEND_BUCKET" \
+            -backend-config="region=$AWS_REGION" \
+            -upgrade \
+            -reconfigure
+        working-directory: terraform
 
       - name: Terraform format
         id: fmt
         run: terraform fmt -check
     
-      - name: Terraform validate
-        id: validate
-        run: terraform validate
-
-      - name: Terraform plan
-        id: plan
-        run: terraform plan -no-color -input=false
-        continue-on-error: true
-    
-      - uses: actions/github-script@v6
-        env:
-          PLAN: "terraform\n${{ steps.plan.outputs.stdout }}"
-        with:
-          script: |
-            const output = `#### Terraform Format and Style 🖌\`${{ steps.fmt.outcome }}\`
-            #### Terraform Initialization ⚙️\`${{ steps.init.outcome }}\`
-            #### Terraform Validation 🤖\`${{ steps.validate.outcome }}\`
-            #### Terraform Plan 📖\`${{ steps.plan.outcome }}\`
-
-            <details><summary>Show Plan</summary>
-
-            \`\`\`\n
-            ${process.env.PLAN}
-            \`\`\`
-
-            </details>
-            *Pushed by: @${{ github.actor }}, Action: \`${{ github.event_name }}\`*`;
-
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: output
-            })
-
-      - name: Terraform Plan Status
-        if: steps.plan.outcome == 'failure'
-        run: exit 1
-
-      - name: Terraform Apply
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-        run: terraform apply -auto-approve -input=false
+      - name: Create ECR repo [TF apply]
+        shell: bash
+        run: |
+          set -eux
+          terraform apply \
+            -var "ecr_repo_name=$ECR_REPO_NAME" \
+            -var "aws_region=$AWS_REGION" \
+            -var "aws_acc_id=$AWS_ACCOUNT_ID" \
+            -auto-approve
+        working-directory: terraform
