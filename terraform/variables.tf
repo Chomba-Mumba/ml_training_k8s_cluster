@@ -6,6 +6,11 @@ variable "ecr_registry" {
   type    = string
 }
 
+variable "eks_addon_version_efs_csi_driver" {
+    type = string
+    default = "v2.1.8-eksbuild.1"
+}
+
 variable "image_tag" {
   type    = string
   default = "latest"
