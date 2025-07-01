@@ -12,3 +12,36 @@ crash.log
 *.tfvars
 
 */Untitled-1.json
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build cache
+/build/
+/bin/
+/dist/
+*.log
+
+# Dependency management
+go.sum
+
+# IDE/editor configs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Test coverage files
+*.cover
+coverage.out
