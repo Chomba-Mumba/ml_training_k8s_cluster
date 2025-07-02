@@ -3,12 +3,23 @@ package k8sclient
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
+
+func checkErr(err error) {
+	if err != nil {
+		log.Println("Error:", err)
+		os.Exit(1)
+	}
+}
 
 type K8sClient struct {
 	client kubernetes.Interface
@@ -63,4 +74,37 @@ func (k8s *K8sClient) CreatePod(podName string, image string) error {
 	} else {
 		return err
 	}
+}
+
+func (k8s *K8sClient) DeletePod(podName string) {
+	err := k8s.client.CoreV1().
+		Pods("default").
+		Delete(
+			context.Background(),
+			podName,
+			metav1.DeleteOptions{},
+		)
+	checkErr(err)
+}
+
+func (k8s *K8sClient) GetPodExitCode(ctx context.Context, name string, podName string) (int32, error) {
+	var exitCode int32
+	cli := k8s.client.CoreV1().Pods("default")
+	err := wait.PollUntilContextTimeout(ctx, 3*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		p, err := cli.Get(context.Background(), podName, metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		if len(p.Status.ContainerStatuses) == 0 {
+			return false, nil
+		}
+		state := p.Status.ContainerStatuses[0].State
+		if state.Terminated != nil {
+			exitCode = state.Terminated.ExitCode
+			return true, nil
+		}
+		return false, nil
+	})
+	checkErr(err)
+	return exitCode, nil
 }
