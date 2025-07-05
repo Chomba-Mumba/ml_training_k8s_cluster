@@ -2,9 +2,9 @@ package collector
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	//TODO - mount IRSA to pod for AWS SDK creds
@@ -15,8 +15,8 @@ import (
 
 type Collector struct {
 	FitQueueUrl string
-	migQ        string
-	fitVals     []string
+	migQueueUrl        string
+
 	SqsClient   *sqs.Client
 	maxMessages int32
 	waitTime    int32
@@ -26,37 +26,38 @@ type Collector struct {
 	// TODO - Add migrator
 
 }
-
+type message struct {
+	fitness int `json:"fitness"`
+	hyperparameters map[string]interface{} `json:"hyperparameters"`
+	source string `json:"source"`
+}
 // sqs message handler
-func handler(msg types.Message) error {
-	//
+func handler(m message,  messageChannel <- chan message) error {
+	//read from registry of sub-populations and place individual there
+	for m
 }
 
-func newMessage(msg types.Message) types.Message {
-
+func newMessage(response types.Message) message {
+	// receive message in JSON format and return s
+	body := response.Body
+	m := message{}
+	json.Unmarshal([]byte(*body),&m)
+	return m
 }
 
-func (c *Collector) delete(m types.Message) error {
+func (c *Collector) delete(m message) error {
 
-}
-
-func (c *Collector) run(m types.Message) error {
-	defer atomic.AddInt32(&c.workerCount, -1)
-	err := handler(m)
-	if err != nil {
-		return err
-	}
-	return c.delete(m)
 }
 
 func (c *Collector) Collect() {
 	//create go routine for workers consuming messages from sqs
+	messageChannel := make(chan message)
 	for w := 1; w <= int(c.workerPool); w++ {
-		go c.worker(w)
+		go c.worker(w, messageChannel)
 	}
 }
 
-func (c *Collector) worker(id int) {
+func (c *Collector) worker(id int, messageChannel <- chan message) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -70,16 +71,17 @@ func (c *Collector) worker(id int) {
 			continue
 		}
 		var wg sync.WaitGroup
-		for _, message := range result.Messages {
+		for _, m := range result.Messages {
+			// TODO - process m using newMessage(), add m to messageChannel, in the handler pull values from messageChannel to be handled by workers
 			wg.Add(1)
-			go func(message types.Message) {
+			go func(m message, messageChannel <- chan message) {
 				defer wg.Done()
-				if err := handler(message); err != nil {
+				if err := handler(m, messageChannel); err != nil {
 					log.Printf("Error handling request: %v", err)
 					return
 				}
-				c.delete(message)
-			}(newMessage(message))
+				c.delete(m)
+			}(newMessage(m))
 		}
 		wg.Wait()
 	}
