@@ -1,10 +1,12 @@
 package collector
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -12,9 +14,6 @@ import (
 
 	//TODO - mount IRSA to pod for AWS SDK creds
 	//TODO - sort out warnings
-	//TODO - Assign message handle
-	//TODO - sending message to seperate sqs queues/directly to pods?
-	"orchestrator/internal/k8sclient"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -24,26 +23,22 @@ import (
 
 type Collector struct {
 	FitQueueUrl string
-	migQueueUrl string
 
 	SqsClient    *sqs.Client
 	maxMessages  int32
 	waitTime     int32
 	totalIslands int
 	workerPool   int32
-
-	k8s k8sclient.K8sClient
 }
 type message struct {
 	fitness         int                    `json:"fitness"`
 	hyperparameters map[string]interface{} `json:"hyperparameters"`
-	source          int                    `json:"source"`
+	hostname        string                 `json:"hostname"`
 	messageHandle   *string
 }
 
-func NewCollector(k8 k8sclient.K8sClient) Collector {
+func NewCollector() Collector {
 	fQ := os.Getenv("FIT_QUEUE_URL")
-	mQ := os.Getenv("MIG_QUEUE_URL")
 
 	tI, err := strconv.Atoi(os.Getenv("TOTAL_ISLANDS"))
 	if err != nil {
@@ -62,43 +57,57 @@ func NewCollector(k8 k8sclient.K8sClient) Collector {
 
 	client := sqs.NewFromConfig(cfg)
 
-	c := Collector{FitQueueUrl: fQ, migQueueUrl: mQ, SqsClient: client,
-		maxMessages: 10, waitTime: 1, totalIslands: int(tI), workerPool: int32(wP),
-		k8s: k8}
+	c := Collector{FitQueueUrl: fQ, SqsClient: client,
+		maxMessages: 10, waitTime: 1, totalIslands: int(tI), workerPool: int32(wP)}
 
 	return c
+}
+func (c *Collector) findRecepient(src string) (string, error) {
+	s, err := strconv.Atoi(string(src[len(src)-1:]))
+	if err != nil {
+		return "", fmt.Errorf("Error finding recepient: %v", err)
+	}
+	return strconv.Itoa((s + 1) % c.totalIslands), nil
 }
 
 // sqs message handler
 func (c *Collector) handler(m message) error {
 	//send island to relevant island
+
+	des, err := c.findRecepient(m.hostname)
+	if err != nil {
+		return fmt.Errorf("Error in handler: %v", err)
+	}
+
+	//internal cluster endpoint
+	posturl := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", des)
+
 	h, err := json.Marshal(m.hyperparameters)
 	if err != nil {
-		return fmt.Errorf("unable to create a client: %v", err)
+		return fmt.Errorf("Error in handler: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	_, err = c.SqsClient.SendMessage(ctx, &sqs.SendMessageInput{
-		MessageAttributes: map[string]types.MessageAttributeValue{
-			"Destination": {
-				DataType:    aws.String("String"),
-				StringValue: aws.String(strconv.Itoa((m.source + 1) % c.totalIslands)),
-			},
-			"Source": {
-				DataType:    aws.String("String"),
-				StringValue: aws.String(strconv.Itoa(m.source)),
-			},
-			"Fitness": {
-				DataType:    aws.String("String"),
-				StringValue: aws.String(strconv.Itoa(m.fitness)),
-			},
-		},
-		MessageBody: aws.String(string(h)),
-		QueueUrl:    &c.migQueueUrl,
-	})
+
+	body := []byte(fmt.Sprintf(`{
+		"fitness": %d,
+		"body": %s
+		}`, m.fitness, h))
+
+	r, err := http.NewRequest("POST", posturl, bytes.NewBuffer(body))
 	if err != nil {
-		return fmt.Errorf("failed to send message to sqs: %v", err)
+		panic(err)
 	}
+
+	r.Header.Add("Content-Type", "application/json")
+	client := &http.Client{}
+	res, err := client.Do(r)
+	if err != nil {
+		panic(err)
+	}
+
+	if res.StatusCode != http.StatusOK {
+		panic(res.Status)
+	}
+
 	return nil
 }
 
