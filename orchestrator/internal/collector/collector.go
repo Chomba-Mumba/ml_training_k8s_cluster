@@ -5,13 +5,19 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"sync"
 	"time"
 
 	//TODO - mount IRSA to pod for AWS SDK creds
 	//TODO - sort out warnings
+	//TODO - Assign message handle
+	//TODO - sending message to seperate sqs queues/directly to pods?
+	"orchestrator/internal/k8sclient"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
@@ -25,6 +31,8 @@ type Collector struct {
 	waitTime     int32
 	totalIslands int
 	workerPool   int32
+
+	k8s k8sclient.K8sClient
 }
 type message struct {
 	fitness         int                    `json:"fitness"`
@@ -33,9 +41,37 @@ type message struct {
 	messageHandle   *string
 }
 
+func NewCollector(k8 k8sclient.K8sClient) Collector {
+	fQ := os.Getenv("FIT_QUEUE_URL")
+	mQ := os.Getenv("MIG_QUEUE_URL")
+
+	tI, err := strconv.Atoi(os.Getenv("TOTAL_ISLANDS"))
+	if err != nil {
+		panic(err)
+	}
+
+	wP, err := strconv.Atoi(os.Getenv("WORKER_POOL"))
+	if err != nil {
+		panic(err)
+	}
+
+	cfg, err := config.LoadDefaultConfig(context.TODO())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	client := sqs.NewFromConfig(cfg)
+
+	c := Collector{FitQueueUrl: fQ, migQueueUrl: mQ, SqsClient: client,
+		maxMessages: 10, waitTime: 1, totalIslands: int(tI), workerPool: int32(wP),
+		k8s: k8}
+
+	return c
+}
+
 // sqs message handler
 func (c *Collector) handler(m message) error {
-	//read from registry of sub-populations and place individual there
+	//send island to relevant island
 	h, err := json.Marshal(m.hyperparameters)
 	if err != nil {
 		return fmt.Errorf("unable to create a client: %v", err)
