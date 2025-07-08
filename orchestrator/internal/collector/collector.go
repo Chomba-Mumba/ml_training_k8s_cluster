@@ -1,12 +1,10 @@
 package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"strconv"
 	"sync"
@@ -24,11 +22,10 @@ import (
 type Collector struct {
 	FitQueueUrl string
 
-	SqsClient    *sqs.Client
-	maxMessages  int32
-	waitTime     int32
-	totalIslands int
-	workerPool   int32
+	SqsClient   *sqs.Client
+	maxMessages int32
+	waitTime    int32
+	workerPool  int32
 }
 type message struct {
 	fitness         int                    `json:"fitness"`
@@ -37,13 +34,38 @@ type message struct {
 	messageHandle   *string
 }
 
+type Worker struct {
+	source   chan message
+	quit     chan struct{}
+	function string
+	handler  func(msg message) error
+}
+
+func dispatch(msg message, workers []Worker) {
+	//broadcast message to each workers source channel
+	for _, worker := range workers {
+		worker.source <- msg //send message to channel
+	}
+}
+
+func (w *Worker) Start(handler func(msg message) error, quit_channel chan struct{}) {
+	w.source = make(chan message, 10) //buffer to avoid blocking
+	w.quit = quit_channel
+	//TODO - sync.waitgroup
+	go func() {
+		for {
+			select {
+			case msg := <-w.source:
+				handler(msg)
+			case <-w.quit:
+				return
+			}
+		}
+	}()
+}
+
 func NewCollector() Collector {
 	fQ := os.Getenv("FIT_QUEUE_URL")
-
-	tI, err := strconv.Atoi(os.Getenv("TOTAL_ISLANDS"))
-	if err != nil {
-		panic(err)
-	}
 
 	wP, err := strconv.Atoi(os.Getenv("WORKER_POOL"))
 	if err != nil {
@@ -58,57 +80,9 @@ func NewCollector() Collector {
 	client := sqs.NewFromConfig(cfg)
 
 	c := Collector{FitQueueUrl: fQ, SqsClient: client,
-		maxMessages: 10, waitTime: 1, totalIslands: int(tI), workerPool: int32(wP)}
+		maxMessages: 10, waitTime: 1, workerPool: int32(wP)}
 
 	return c
-}
-func (c *Collector) findRecepient(src string) (string, error) {
-	s, err := strconv.Atoi(string(src[len(src)-1:]))
-	if err != nil {
-		return "", fmt.Errorf("Error finding recepient: %v", err)
-	}
-	return strconv.Itoa((s + 1) % c.totalIslands), nil
-}
-
-// sqs message handler
-func (c *Collector) handler(m message) error {
-	//send island to relevant island
-
-	des, err := c.findRecepient(m.hostname)
-	if err != nil {
-		return fmt.Errorf("Error in handler: %v", err)
-	}
-
-	//internal cluster endpoint
-	posturl := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", des)
-
-	h, err := json.Marshal(m.hyperparameters)
-	if err != nil {
-		return fmt.Errorf("Error in handler: %v", err)
-	}
-
-	body := []byte(fmt.Sprintf(`{
-		"fitness": %d,
-		"body": %s
-		}`, m.fitness, h))
-
-	r, err := http.NewRequest("POST", posturl, bytes.NewBuffer(body))
-	if err != nil {
-		panic(err)
-	}
-
-	r.Header.Add("Content-Type", "application/json")
-	client := &http.Client{}
-	res, err := client.Do(r)
-	if err != nil {
-		panic(err)
-	}
-
-	if res.StatusCode != http.StatusOK {
-		panic(res.Status)
-	}
-
-	return nil
 }
 
 func newMessage(response types.Message) message {
@@ -133,14 +107,22 @@ func (c *Collector) delete(m message) error {
 	return nil
 }
 
-func (c *Collector) Collect() {
-	//create go routine for workers consuming messages from sqs
-	for w := 1; w <= int(c.workerPool); w++ {
-		go c.worker(w)
+func (c *Collector) Collect(workers []Worker) {
+	globalQuit := make(chan struct{})
+	//start workers
+	for _, w := range workers {
+		w.Start(w.handler, globalQuit)
 	}
+
+	//create worker pool for listening to messages
+	for w := 1; w <= int(c.workerPool); w++ {
+		go c.listener(w, workers)
+	}
+
+	//TODO - close global quit
 }
 
-func (c *Collector) worker(id int) {
+func (c *Collector) listener(id int, workers []Worker) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -150,18 +132,17 @@ func (c *Collector) worker(id int) {
 			MaxNumberOfMessages: c.maxMessages,
 			WaitTimeSeconds:     c.waitTime,
 		})
+
 		if err != nil {
 			continue
 		}
+
 		var wg sync.WaitGroup
 		for _, m := range result.Messages {
 			wg.Add(1)
 			go func(m message) {
 				defer wg.Done()
-				if err := c.handler(m); err != nil {
-					log.Printf("Error handling request: %v", err)
-					return
-				}
+				dispatch(m, workers)
 				c.delete(m)
 			}(newMessage(m))
 		}
