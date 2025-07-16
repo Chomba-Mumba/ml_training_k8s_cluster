@@ -86,7 +86,7 @@ func NewCollector() Collector {
 }
 
 func newMessage(response types.Message) message {
-	// receive message in JSON format and return s
+	// receive message in JSON format and return parsed message item
 	body := response.Body
 	m := message{}
 	json.Unmarshal([]byte(*body), &m)

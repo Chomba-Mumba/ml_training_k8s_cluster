@@ -1,8 +1,8 @@
 package collector
 
-//TODO - stopping criteria: stagnant population/negligable fitness change
 import (
 	"context"
+	"fmt"
 
 	"github.com/go-gota/gota/dataframe"
 	"github.com/go-gota/gota/series"
@@ -80,7 +80,19 @@ func (m *Monitor) monHandler(msg message) error {
 	fil := m.df.Filter(
 		dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
 	)
+	//if patience == 0 and acc hasnt improved halt training else reset patience
+	best, err := fil.Elem(0, 3).Int()
+	if err != nil {
+		return fmt.Errorf("error getting best fitness: %v", err)
+	}
+	if msg.fitness < best {
+		m.patience -= 1
+		if m.patience < 0 {
+			//halt training
+		}
+	}
+	//log metrics to grafana
 
 	m.trainCycle += 1
-
+	return nil
 }

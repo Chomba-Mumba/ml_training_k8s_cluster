@@ -16,13 +16,15 @@ type Migrator struct {
 }
 
 func (m *Migrator) newMigrator() {
+
+	src := make(chan message)
+	qt := make(chan struct{})
+	w := Worker{source: src, quit: qt, handler: m.mig_handler, function: "migrator"}
+
 	tI, err := strconv.Atoi(os.Getenv("TOTAL_ISLANDS"))
 	if err != nil {
 		panic(err)
 	}
-
-	w := Worker{handler: m.mig_handler, function: "migrator"}
-
 	m.worker = w
 	m.totalIslands = int(tI)
 
