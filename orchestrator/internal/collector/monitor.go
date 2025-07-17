@@ -3,6 +3,7 @@ package collector
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	"github.com/go-gota/gota/dataframe"
 	"github.com/go-gota/gota/series"
@@ -34,6 +35,13 @@ type tableItem struct {
 	hyperparameters string
 }
 
+func min(a int, b int) int {
+	if a < b {
+		return a
+	}
+
+	return b
+}
 func (m *Monitor) newMonitor() {
 
 	// create and assign gauge
@@ -87,15 +95,42 @@ func (m *Monitor) addRow(trainCycle int, id int, fit int, best int, hyper int) e
 
 func (m *Monitor) monHandler(msg message) error {
 	//get most recent fitness
-	cycle := m.trainCycle
+	host := msg.hostname
 	fil := m.df.Filter(
-		dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
+		dataframe.F{Colname: "island", Comparator: series.Eq, Comparando: host},
 	)
+	sorted := fil.Arrange(
+		dataframe.RevSort("trainCylce"),
+	)
+
+	//get top 'patience' rows
+	recent := sorted.Subset(0, min(m.patience, sorted.Nrow()))
+
+	fitnessCol := recent.Col("fitness")
+	fitnessValues := fitnessCol.Records()
+
+	var fitnessInts []int
+	for _, val := range fitnessValues {
+		i, err := strconv.Atoi(val)
+		if err == nil {
+			fitnessInts = append(fitnessInts, i)
+		}
+	}
+
+	mostRecent := fitnessInts[0]
+	hasImproved := false
+	for _, v := range fitnessInts[1:] {
+		if v > mostRecent {
+			hasImproved = true
+			break
+		}
+	}
 	//if patience == 0 and acc hasnt improved halt training else reset patience
 	best, err := fil.Elem(0, 3).Int()
 	if err != nil {
 		return fmt.Errorf("error getting previous best fitness: %v", err)
 	}
+	//TODO - compoare against old fitness values for island
 	if msg.fitness < best {
 		m.patience -= 1
 		if m.patience < 0 {
@@ -108,5 +143,38 @@ func (m *Monitor) monHandler(msg message) error {
 	m.gauge.WithLabelValues(msg.hostname, "training").Set(float64(msg.fitness))
 
 	m.trainCycle += 1
+	return nil
+}
+
+func (m *Monitor) combineResults() error {
+	if m.trainCycle > 1 {
+		//get most recent fitness
+		cycle := m.trainCycle
+		fil := m.df.Filter(
+			dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
+		)
+		newBest, err := fil.Elem(0, 3).Int()
+		if err != nil {
+			return fmt.Errorf("error getting previous best fitness: %v", err)
+		}
+
+		//get pervious fitness
+		oldCycle := m.trainCycle - 1
+		filOld := m.df.Filter(
+			dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: oldCycle},
+		)
+		oldBest, errOld := filOld.Elem(0, 3).Int()
+		if errOld != nil {
+			return fmt.Errorf("error getting previous best fitness: %v", errOld)
+		}
+
+		if newBest < oldBest {
+			m.patience -= 1
+			if m.patience < 0 {
+				// halt all training
+				return nil
+			}
+		}
+	}
 	return nil
 }
