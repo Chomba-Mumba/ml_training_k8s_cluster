@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-gota/gota/dataframe"
 	"github.com/go-gota/gota/series"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
@@ -22,6 +23,7 @@ type Monitor struct {
 	df             dataframe.DataFrame
 	trainCycle     int
 	patience       int
+	gauge          *prometheus.GaugeVec
 }
 
 type tableItem struct {
@@ -33,9 +35,18 @@ type tableItem struct {
 }
 
 func (m *Monitor) newMonitor() {
+
+	// create and assign gauge
+	g := initGauge()
+	m.gauge = g
+
+	// serve prometheus connection
+	servePromConn()
+
+	// init monitor
 	m.trainCycle = 0
 
-	// initialise worker
+	// init worker
 	src := make(chan message)
 	qt := make(chan struct{})
 	w := Worker{source: src, quit: qt, handler: m.monHandler, function: "migrator"}
@@ -83,15 +94,18 @@ func (m *Monitor) monHandler(msg message) error {
 	//if patience == 0 and acc hasnt improved halt training else reset patience
 	best, err := fil.Elem(0, 3).Int()
 	if err != nil {
-		return fmt.Errorf("error getting best fitness: %v", err)
+		return fmt.Errorf("error getting previous best fitness: %v", err)
 	}
 	if msg.fitness < best {
 		m.patience -= 1
 		if m.patience < 0 {
 			//halt training
+			//TODO - halting training for a single sub population?
 		}
 	}
-	//log metrics to grafana
+
+	//send metrics to prometheus
+	m.gauge.WithLabelValues(msg.hostname, "training").Set(float64(msg.fitness))
 
 	m.trainCycle += 1
 	return nil
