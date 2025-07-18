@@ -130,7 +130,7 @@ func (m *Monitor) monHandler(msg message) error {
 
 	if !hasImproved {
 		//stop training
-		requestURL := fmt.Sprintf("url-stop-training:%d", 2200)
+		requestURL := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", msg.hostname)
 		res, err := http.Get(requestURL)
 		if err != nil {
 			fmt.Printf("error making request: %v", err)
@@ -186,7 +186,6 @@ func (m *Monitor) combineResults() error {
 					wg.Add(1)
 					go stopTraining(val, &wg)
 				}
-				return nil
 			}
 		}
 	}
@@ -195,7 +194,8 @@ func (m *Monitor) combineResults() error {
 
 func stopTraining(island string, wg *sync.WaitGroup) {
 	defer wg.Done()
-	res, err := http.Get("stop-training-url" + island)
+	url := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", island)
+	res, err := http.Get(url)
 	if err != nil {
 		fmt.Printf("error making request: %v", err)
 	}
