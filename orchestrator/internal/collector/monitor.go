@@ -3,7 +3,9 @@ package collector
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strconv"
+	"sync"
 
 	"github.com/go-gota/gota/dataframe"
 	"github.com/go-gota/gota/series"
@@ -104,7 +106,7 @@ func (m *Monitor) monHandler(msg message) error {
 	)
 
 	//get top 'patience' rows
-	recent := sorted.Subset(0, min(m.patience, sorted.Nrow()))
+	recent := sorted.Subset([]int{0, min(m.patience, sorted.Nrow())})
 
 	fitnessCol := recent.Col("fitness")
 	fitnessValues := fitnessCol.Records()
@@ -125,18 +127,17 @@ func (m *Monitor) monHandler(msg message) error {
 			break
 		}
 	}
-	//if patience == 0 and acc hasnt improved halt training else reset patience
-	best, err := fil.Elem(0, 3).Int()
-	if err != nil {
-		return fmt.Errorf("error getting previous best fitness: %v", err)
-	}
-	//TODO - compoare against old fitness values for island
-	if msg.fitness < best {
-		m.patience -= 1
-		if m.patience < 0 {
-			//halt training
-			//TODO - halting training for a single sub population?
+
+	if !hasImproved {
+		//stop training
+		requestURL := fmt.Sprintf("url-stop-training:%d", 2200)
+		res, err := http.Get(requestURL)
+		if err != nil {
+			fmt.Printf("error making request: %v", err)
 		}
+
+		//send notification
+		fmt.Printf("client response: status code: %d\n", res.StatusCode)
 	}
 
 	//send metrics to prometheus
@@ -171,10 +172,34 @@ func (m *Monitor) combineResults() error {
 		if newBest < oldBest {
 			m.patience -= 1
 			if m.patience < 0 {
+
 				// halt all training
+				fil = m.df.Filter(
+					dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
+				)
+
+				islands := fil.Col("island")
+				islandValues := islands.Records()
+
+				var wg sync.WaitGroup
+				for _, val := range islandValues {
+					wg.Add(1)
+					go stopTraining(val, &wg)
+				}
 				return nil
 			}
 		}
 	}
 	return nil
+}
+
+func stopTraining(island string, wg *sync.WaitGroup) {
+	defer wg.Done()
+	res, err := http.Get("stop-training-url" + island)
+	if err != nil {
+		fmt.Printf("error making request: %v", err)
+	}
+
+	fmt.Printf("client response: status code: %d\n", res.StatusCode)
+
 }
