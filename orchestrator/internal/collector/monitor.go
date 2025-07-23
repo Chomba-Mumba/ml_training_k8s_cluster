@@ -20,7 +20,7 @@ import (
 type Monitor struct {
 	c              Collector
 	handler        func(data interface{})
-	worker         Worker
+	Worker         *Worker
 	dynamoDBClient *dynamodb.Client
 	tableName      string
 	df             dataframe.DataFrame
@@ -44,7 +44,7 @@ func min(a int, b int) int {
 
 	return b
 }
-func (m *Monitor) newMonitor() {
+func (m *Monitor) NewMonitor() {
 
 	// create and assign gauge
 	g := initGauge()
@@ -61,7 +61,7 @@ func (m *Monitor) newMonitor() {
 	qt := make(chan struct{})
 	w := Worker{source: src, quit: qt, handler: m.monHandler, function: "migrator"}
 
-	m.worker = w
+	m.Worker = &w
 
 	//initialise client
 	cfg, err := config.LoadDefaultConfig(context.TODO())

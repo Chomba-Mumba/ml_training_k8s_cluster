@@ -41,14 +41,14 @@ type Worker struct {
 	handler  func(msg message) error
 }
 
-func dispatch(msg message, workers []Worker) {
+func dispatch(msg message, workers []*Worker) {
 	//broadcast message to each workers source channel
 	for _, worker := range workers {
 		worker.source <- msg //send message to channel
 	}
 }
 
-func (w *Worker) Start(handler func(msg message) error, quit_channel chan struct{}) {
+func (w *Worker) StartWorker(handler func(msg message) error, quit_channel chan struct{}) {
 	w.source = make(chan message, 10) //buffer to avoid blocking
 	w.quit = quit_channel
 	//TODO - sync.waitgroup
@@ -65,6 +65,7 @@ func (w *Worker) Start(handler func(msg message) error, quit_channel chan struct
 }
 
 func NewCollector() Collector {
+	//process messages from training queues
 	fQ := os.Getenv("FIT_QUEUE_URL")
 
 	wP, err := strconv.Atoi(os.Getenv("WORKER_POOL"))
@@ -107,11 +108,11 @@ func (c *Collector) delete(m message) error {
 	return nil
 }
 
-func (c *Collector) Collect(workers []Worker) {
+func (c *Collector) Collect(workers []*Worker) {
 	globalQuit := make(chan struct{})
 	//start workers
 	for _, w := range workers {
-		w.Start(w.handler, globalQuit)
+		w.StartWorker(w.handler, globalQuit)
 	}
 
 	//create worker pool for listening to messages
@@ -122,7 +123,7 @@ func (c *Collector) Collect(workers []Worker) {
 	//TODO - close global quit
 }
 
-func (c *Collector) listener(id int, workers []Worker) {
+func (c *Collector) listener(id int, workers []*Worker) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

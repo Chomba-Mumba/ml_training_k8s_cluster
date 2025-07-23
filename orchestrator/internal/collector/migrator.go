@@ -10,12 +10,12 @@ import (
 )
 
 type Migrator struct {
-	worker       Worker
+	Worker       *Worker
 	totalIslands int
 	handler      func(msg message) error
 }
 
-func (m *Migrator) newMigrator() {
+func (m *Migrator) NewMigrator() {
 
 	src := make(chan message)
 	qt := make(chan struct{})
@@ -25,7 +25,7 @@ func (m *Migrator) newMigrator() {
 	if err != nil {
 		panic(err)
 	}
-	m.worker = w
+	m.Worker = &w
 	m.totalIslands = int(tI)
 
 }
@@ -39,11 +39,7 @@ func (m *Migrator) findRecepient(src string) (string, error) {
 }
 
 func (m *Migrator) mig_handler(msg message) error {
-	//send island to relevant island
-	// var msg message
-	// if val, ok := params["message"].(message); ok {
-	// 	msg = val
-	// }
+	//send indiividual to relevant island
 	des, err := m.findRecepient(msg.hostname)
 	if err != nil {
 		return fmt.Errorf("error in handler: %v", err)
