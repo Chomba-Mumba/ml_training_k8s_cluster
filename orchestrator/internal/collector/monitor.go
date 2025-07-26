@@ -84,7 +84,7 @@ func (m *Monitor) NewMonitor() {
 
 }
 
-func (m *Monitor) addRow(trainCycle int, id int, fit int, best int, hyper int) error {
+func (m *Monitor) addRow(trainCycle int, id int, fit int, best int, hyper map[string]interface{}) {
 	new := dataframe.New(
 		series.New(trainCycle, series.Int, "trainCylce"),
 		series.New(id, series.Int, "island"),
@@ -93,7 +93,6 @@ func (m *Monitor) addRow(trainCycle int, id int, fit int, best int, hyper int) e
 		series.New(hyper, series.String, "hyperparameters"),
 	)
 	m.df = m.df.RBind(new)
-	return nil
 }
 
 func (m *Monitor) monHandler(msg message) error {
@@ -135,17 +134,25 @@ func (m *Monitor) monHandler(msg message) error {
 		requestURL := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/stop_training", msg.hostname)
 		res, err := http.Get(requestURL)
 		if err != nil {
-			fmt.Printf("error making request: %v", err)
+			return fmt.Errorf("error making request: %v", err)
 		}
 
 		//send notification
-		fmt.Printf("client response: status code: %d\n", res.StatusCode)
+		return fmt.Errorf("client response: status code: %d", res.StatusCode)
 	}
 
 	//send metrics to prometheus
 	m.gauge.WithLabelValues(msg.hostname, "training").Set(float64(msg.fitness))
 
 	m.trainCycle += 1
+
+	hostID, err := strconv.Atoi(host)
+	if err != nil {
+		return fmt.Errorf("error getting hostID %v", err)
+	}
+
+	//add details to df
+	m.addRow(m.trainCycle, hostID, msg.fitness, 0, msg.hyperparameters)
 	return nil
 }
 
