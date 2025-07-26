@@ -22,10 +22,10 @@ import (
 type Collector struct {
 	FitQueueUrl string
 
-	SqsClient   *sqs.Client
-	maxMessages int32
-	waitTime    int32
-	workerPool  int32
+	SqsClient      *sqs.Client
+	maxMessages    int32
+	waitTime       int32
+	workerPoolSize int32
 }
 type message struct {
 	fitness         int                    `json:"fitness"`
@@ -38,30 +38,34 @@ type Worker struct {
 	source   chan message
 	quit     chan struct{}
 	function string
-	handler  func(msg message) error
+	handler  func(msg message, wg *sync.WaitGroup) error
+	close    func() error
 }
 
 func dispatch(msg message, workers []*Worker) {
 	//broadcast message to each workers source channel
 	for _, worker := range workers {
-		worker.source <- msg //send message to channel
+		worker.source <- msg
 	}
 }
 
-func (w *Worker) StartWorker(handler func(msg message) error, quit_channel chan struct{}) {
+// start go routine for each type of worker in workers slice
+func (w *Worker) StartWorker(handler func(msg message, wg *sync.WaitGroup) error, quit_channel chan struct{}, wg *sync.WaitGroup) {
 	w.source = make(chan message, 10) //buffer to avoid blocking
 	w.quit = quit_channel
-	//TODO - sync.waitgroup
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case msg := <-w.source:
-				handler(msg)
+				handler(msg, wg)
 			case <-w.quit:
 				return
 			}
 		}
 	}()
+	wg.Done()
 }
 
 func NewCollector() Collector {
@@ -81,7 +85,7 @@ func NewCollector() Collector {
 	client := sqs.NewFromConfig(cfg)
 
 	c := Collector{FitQueueUrl: fQ, SqsClient: client,
-		maxMessages: 10, waitTime: 1, workerPool: int32(wP)}
+		maxMessages: 10, waitTime: 1, workerPoolSize: int32(wP)}
 
 	return c
 }
@@ -110,20 +114,31 @@ func (c *Collector) delete(m message) error {
 
 func (c *Collector) Collect(workers []*Worker) {
 	globalQuit := make(chan struct{})
-	//start workers
+
+	fmt.Printf("Polling SQS Queue...")
+
+	var wg sync.WaitGroup
+
+	//pool of listeners
+	for w := 1; w <= int(c.workerPoolSize); w++ {
+		wg.Add(1)
+		go c.listener(workers, &wg, globalQuit)
+	}
+
+	wg.Wait()
+	close(globalQuit)
+
+	//aggregate results from monitor
 	for _, w := range workers {
-		w.StartWorker(w.handler, globalQuit)
+		if w.function == "monitor" {
+			w.close()
+			break
+		}
 	}
 
-	//create worker pool for listening to messages
-	for w := 1; w <= int(c.workerPool); w++ {
-		go c.listener(w, workers)
-	}
-
-	//TODO - close global quit
 }
 
-func (c *Collector) listener(id int, workers []*Worker) {
+func (c *Collector) listener(workers []*Worker, wg *sync.WaitGroup, globalQuit chan struct{}) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -138,15 +153,24 @@ func (c *Collector) listener(id int, workers []*Worker) {
 			continue
 		}
 
-		var wg sync.WaitGroup
+		var workersWG sync.WaitGroup
+
 		for _, m := range result.Messages {
-			wg.Add(1)
-			go func(m message) {
-				defer wg.Done()
-				dispatch(m, workers)
-				c.delete(m)
-			}(newMessage(m))
+			//start different types of workers (in go routines)
+			for _, w := range workers {
+				workersWG.Add(1)
+				w.StartWorker(w.handler, globalQuit, &workersWG)
+			}
+
+			// send messages to workers job channels
+			msg := newMessage(m)
+			dispatch(msg, workers)
+
+			//fully process message and terminate
+			workersWG.Wait()
+			c.delete(msg)
 		}
-		wg.Wait()
+
+		wg.Done()
 	}
 }
