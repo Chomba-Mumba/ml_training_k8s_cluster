@@ -12,7 +12,6 @@ import (
 type Migrator struct {
 	Worker       *Worker
 	totalIslands int
-	handler      func(msg message) error
 }
 
 func (m *Migrator) NewMigrator() {
@@ -46,7 +45,7 @@ func (m *Migrator) mig_handler(msg message) error {
 	}
 
 	//internal cluster endpoint
-	posturl := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", des)
+	posturl := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/mirgrant", des)
 
 	h, err := json.Marshal(msg.hyperparameters)
 	if err != nil {
@@ -73,6 +72,5 @@ func (m *Migrator) mig_handler(msg message) error {
 	if res.StatusCode != http.StatusOK {
 		panic(res.Status)
 	}
-
 	return nil
 }

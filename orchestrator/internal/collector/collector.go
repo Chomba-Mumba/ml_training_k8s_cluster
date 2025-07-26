@@ -38,7 +38,7 @@ type Worker struct {
 	source   chan message
 	quit     chan struct{}
 	function string
-	handler  func(msg message, wg *sync.WaitGroup) error
+	handler  func(msg message) error
 	close    func() error
 }
 
@@ -50,7 +50,7 @@ func dispatch(msg message, workers []*Worker) {
 }
 
 // start go routine for each type of worker in workers slice
-func (w *Worker) StartWorker(handler func(msg message, wg *sync.WaitGroup) error, quit_channel chan struct{}, wg *sync.WaitGroup) {
+func (w *Worker) StartWorker(handler func(msg message) error, quit_channel chan struct{}, wg *sync.WaitGroup) {
 	w.source = make(chan message, 10) //buffer to avoid blocking
 	w.quit = quit_channel
 	wg.Add(1)
@@ -59,7 +59,7 @@ func (w *Worker) StartWorker(handler func(msg message, wg *sync.WaitGroup) error
 		for {
 			select {
 			case msg := <-w.source:
-				handler(msg, wg)
+				handler(msg)
 			case <-w.quit:
 				return
 			}

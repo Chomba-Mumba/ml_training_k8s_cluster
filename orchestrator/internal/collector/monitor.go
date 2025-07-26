@@ -19,7 +19,6 @@ import (
 
 type Monitor struct {
 	c              Collector
-	handler        func(data interface{})
 	Worker         *Worker
 	dynamoDBClient *dynamodb.Client
 	tableName      string
@@ -27,6 +26,7 @@ type Monitor struct {
 	trainCycle     int
 	patience       int
 	gauge          *prometheus.GaugeVec
+	numIslands     int
 }
 
 type tableItem struct {
@@ -44,6 +44,7 @@ func min(a int, b int) int {
 
 	return b
 }
+
 func (m *Monitor) NewMonitor() {
 
 	// create and assign gauge
@@ -59,7 +60,7 @@ func (m *Monitor) NewMonitor() {
 	// init worker
 	src := make(chan message)
 	qt := make(chan struct{})
-	w := Worker{source: src, quit: qt, handler: m.monHandler, function: "migrator"}
+	w := Worker{source: src, quit: qt, handler: m.monHandler, function: "monitor", close: m.combineResults}
 
 	m.Worker = &w
 
@@ -96,7 +97,7 @@ func (m *Monitor) addRow(trainCycle int, id int, fit int, best int, hyper int) e
 }
 
 func (m *Monitor) monHandler(msg message) error {
-	//get most recent fitness
+	//get most recent fitness values
 	host := msg.hostname
 	fil := m.df.Filter(
 		dataframe.F{Colname: "island", Comparator: series.Eq, Comparando: host},
@@ -119,6 +120,7 @@ func (m *Monitor) monHandler(msg message) error {
 		}
 	}
 
+	// check if fitness has improved for 'patience' rows
 	mostRecent := fitnessInts[0]
 	hasImproved := false
 	for _, v := range fitnessInts[1:] {
@@ -129,8 +131,8 @@ func (m *Monitor) monHandler(msg message) error {
 	}
 
 	if !hasImproved {
-		//stop training
-		requestURL := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", msg.hostname)
+		//stop training for host
+		requestURL := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/stop_training", msg.hostname)
 		res, err := http.Get(requestURL)
 		if err != nil {
 			fmt.Printf("error making request: %v", err)
@@ -148,47 +150,52 @@ func (m *Monitor) monHandler(msg message) error {
 }
 
 func (m *Monitor) combineResults() error {
-	if m.trainCycle > 1 {
-		//get most recent fitness
-		cycle := m.trainCycle
-		fil := m.df.Filter(
-			dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
-		)
-		newBest, err := fil.Elem(0, 3).Int()
-		if err != nil {
-			return fmt.Errorf("error getting previous best fitness: %v", err)
-		}
+	//check last num islands rows populated
 
-		//get pervious fitness
-		oldCycle := m.trainCycle - 1
-		filOld := m.df.Filter(
-			dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: oldCycle},
-		)
-		oldBest, errOld := filOld.Elem(0, 3).Int()
-		if errOld != nil {
-			return fmt.Errorf("error getting previous best fitness: %v", errOld)
-		}
+	if m.trainCycle < 1 {
+		return nil
+	}
 
-		if newBest < oldBest {
-			m.patience -= 1
-			if m.patience < 0 {
+	cycle := m.trainCycle
+	//get most recent fitness
+	fil := m.df.Filter(
+		dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
+	)
+	newBest, err := fil.Elem(0, 3).Int()
+	if err != nil {
+		return fmt.Errorf("error getting best fitness: %v", err)
+	}
 
-				// halt all training
-				fil = m.df.Filter(
-					dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
-				)
+	//get pervious fitness
+	oldCycle := m.trainCycle - 1
+	filOld := m.df.Filter(
+		dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: oldCycle},
+	)
+	oldBest, errOld := filOld.Elem(0, 3).Int()
+	if errOld != nil {
+		return fmt.Errorf("error getting previous best fitness: %v", errOld)
+	}
 
-				islands := fil.Col("island")
-				islandValues := islands.Records()
+	if newBest < oldBest {
+		m.patience -= 1
+		if m.patience < 0 {
+			// halt all training
+			fil = m.df.Filter(
+				dataframe.F{Colname: "trainCycle", Comparator: series.Eq, Comparando: cycle},
+			)
 
-				var wg sync.WaitGroup
-				for _, val := range islandValues {
-					wg.Add(1)
-					go stopTraining(val, &wg)
-				}
+			islands := fil.Col("island")
+			islandValues := islands.Records()
+
+			var wg sync.WaitGroup
+			for _, val := range islandValues {
+				wg.Add(1)
+				go stopTraining(val, &wg)
 			}
 		}
 	}
+	//send message to quit channel
+
 	return nil
 }
 
