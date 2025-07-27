@@ -15,6 +15,12 @@ serviceAccount:
   automount: true
   annotations: {}
   name: ""
+service:
+  type: ClusterIP
+  protocol: TCP
+  port: 6565
+  httpPort: 5000
+  name: grpc
 
 resources: {}
   #commented out for scalability
