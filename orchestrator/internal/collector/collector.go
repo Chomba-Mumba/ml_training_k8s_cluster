@@ -25,18 +25,18 @@ type Collector struct {
 	workerPoolSize int32
 }
 
-type message struct {
-	fitness         int                    `json:"fitness"`
-	hyperparameters map[string]interface{} `json:"hyperparameters"`
-	hostname        string                 `json:"hostname"`
-	messageHandle   *string
+type Message struct {
+	Fitness         int                    `json:"fitness"`
+	Hyperparameters map[string]interface{} `json:"hyperparameters"`
+	Hostname        string                 `json:"hostname"`
+	MessageHandle   *string
 }
 
 type Worker struct {
-	source   chan message
+	source   chan Message
 	quit     chan struct{}
 	function string
-	handler  func(msg message) error
+	handler  func(msg Message) error
 	close    func() error
 }
 
@@ -45,7 +45,7 @@ type SQSClientInterface interface {
 	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 }
 
-func dispatch(msg message, workers []*Worker) {
+func dispatch(msg Message, workers []*Worker) {
 	//broadcast message to each workers source channel
 	for _, worker := range workers {
 		worker.source <- msg
@@ -53,8 +53,8 @@ func dispatch(msg message, workers []*Worker) {
 }
 
 // start go routine for each type of worker in workers slice
-func (w *Worker) StartWorker(handler func(msg message) error, quit_channel chan struct{}, wg *sync.WaitGroup) {
-	w.source = make(chan message, 10) //buffer to avoid blocking
+func (w *Worker) StartWorker(handler func(msg Message) error, quit_channel chan struct{}, wg *sync.WaitGroup) {
+	w.source = make(chan Message, 10) //buffer to avoid blocking
 	w.quit = quit_channel
 	wg.Add(1)
 	go func() {
@@ -86,21 +86,21 @@ func NewCollector(cli SQSClientInterface) Collector {
 	return c
 }
 
-func newMessage(response types.Message) message {
+func newMessage(response types.Message) Message {
 	// receive message in JSON format and return parsed message item
 	body := response.Body
-	m := message{}
+	m := Message{}
 	json.Unmarshal([]byte(*body), &m)
 	return m
 }
 
-func (c *Collector) delete(m message) error {
+func (c *Collector) delete(m Message) error {
 	// remove message from sqs queue
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      &c.FitQueueUrl,
-		ReceiptHandle: m.messageHandle,
+		ReceiptHandle: m.MessageHandle,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to delete message from sqs queue:%v", err)
