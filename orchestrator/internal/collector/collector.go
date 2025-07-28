@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"strconv"
 	"sync"
@@ -14,19 +13,18 @@ import (
 	//TODO - sort out warnings
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 type Collector struct {
-	FitQueueUrl string
-
-	SqsClient      *sqs.Client
+	FitQueueUrl    string
+	client         SQSClientInterface
 	maxMessages    int32
 	waitTime       int32
 	workerPoolSize int32
 }
+
 type message struct {
 	fitness         int                    `json:"fitness"`
 	hyperparameters map[string]interface{} `json:"hyperparameters"`
@@ -40,6 +38,11 @@ type Worker struct {
 	function string
 	handler  func(msg message) error
 	close    func() error
+}
+
+type SQSClientInterface interface {
+	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
+	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 }
 
 func dispatch(msg message, workers []*Worker) {
@@ -68,7 +71,7 @@ func (w *Worker) StartWorker(handler func(msg message) error, quit_channel chan 
 	wg.Done()
 }
 
-func NewCollector() Collector {
+func NewCollector(cli SQSClientInterface) Collector {
 	//process messages from training queues
 	fQ := os.Getenv("FIT_QUEUE_URL")
 
@@ -77,14 +80,7 @@ func NewCollector() Collector {
 		panic(err)
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	client := sqs.NewFromConfig(cfg)
-
-	c := Collector{FitQueueUrl: fQ, SqsClient: client,
+	c := Collector{FitQueueUrl: fQ, client: cli,
 		maxMessages: 10, waitTime: 1, workerPoolSize: int32(wP)}
 
 	return c
@@ -102,7 +98,7 @@ func (c *Collector) delete(m message) error {
 	// remove message from sqs queue
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := c.SqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+	_, err := c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      &c.FitQueueUrl,
 		ReceiptHandle: m.messageHandle,
 	})
@@ -143,7 +139,7 @@ func (c *Collector) listener(workers []*Worker, wg *sync.WaitGroup, globalQuit c
 	defer cancel()
 
 	for {
-		result, err := c.SqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		result, err := c.client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.FitQueueUrl),
 			MaxNumberOfMessages: c.maxMessages,
 			WaitTimeSeconds:     c.waitTime,
