@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -19,12 +18,12 @@ func initGauge() *prometheus.GaugeVec {
 	return gauge
 }
 
-func servePromConn() error {
-	http.Handle("/metrics", promhttp.Handler())
-	err := http.ListenAndServe(":5000", nil)
-	if err != nil {
-		return fmt.Errorf("unable to start server: %v", err)
-	}
-
-	return nil
+func servePromConn() {
+	go func() {
+		http.Handle("/metrics", promhttp.Handler())
+		err := http.ListenAndServe(":5000", nil)
+		if err != nil {
+			panic(err)
+		}
+	}()
 }

@@ -1,7 +1,6 @@
 package collector
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -11,30 +10,28 @@ import (
 	"github.com/go-gota/gota/series"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
-
-	"log"
 )
 
 type Monitor struct {
-	c              Collector
 	Worker         *Worker
 	dynamoDBClient *dynamodb.Client
-	tableName      string
 	df             dataframe.DataFrame
 	trainCycle     int
 	patience       int
 	gauge          *prometheus.GaugeVec
-	numIslands     int
+	HTTPClient     HTTPClientInterface
 }
 
 type tableItem struct {
 	trainCycle      int
 	ID              int
-	fitness         int
+	fitness         int //TODO - change to float value
 	bestFitness     int //TODO - different average?
 	hyperparameters string
+}
+
+type DynamoClient interface {
 }
 
 func min(a int, b int) int {
@@ -45,7 +42,7 @@ func min(a int, b int) int {
 	return b
 }
 
-func (m *Monitor) NewMonitor() {
+func (m *Monitor) NewMonitor(HTTPClient HTTPClientInterface) {
 
 	// create and assign gauge
 	g := initGauge()
@@ -57,21 +54,14 @@ func (m *Monitor) NewMonitor() {
 	// init monitor
 	m.trainCycle = 0
 
+	m.HTTPClient = HTTPClient
+
 	// init worker
-	src := make(chan message)
+	src := make(chan Message)
 	qt := make(chan struct{})
-	w := Worker{source: src, quit: qt, handler: m.monHandler, function: "monitor", close: m.combineResults}
+	w := Worker{source: src, quit: qt, handler: m.MonHandler, function: "monitor", close: m.combineResults}
 
 	m.Worker = &w
-
-	//initialise client
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	client := dynamodb.NewFromConfig(cfg)
-	m.dynamoDBClient = client
 
 	df := dataframe.New(
 		series.New(nil, series.Int, "trainCylce"),
@@ -95,54 +85,64 @@ func (m *Monitor) addRow(trainCycle int, id int, fit int, best int, hyper map[st
 	m.df = m.df.RBind(new)
 }
 
-func (m *Monitor) monHandler(msg message) error {
-	//get most recent fitness values
-	host := msg.hostname
-	fil := m.df.Filter(
-		dataframe.F{Colname: "island", Comparator: series.Eq, Comparando: host},
-	)
-	sorted := fil.Arrange(
-		dataframe.RevSort("trainCylce"),
-	)
+func (m *Monitor) MonHandler(msg Message) error {
 
-	//get top 'patience' rows
-	recent := sorted.Subset([]int{0, min(m.patience, sorted.Nrow())})
+	host := msg.Hostname
 
-	fitnessCol := recent.Col("fitness")
-	fitnessValues := fitnessCol.Records()
+	if m.trainCycle < m.patience {
+		//get most recent fitness values
 
-	var fitnessInts []int
-	for _, val := range fitnessValues {
-		i, err := strconv.Atoi(val)
-		if err == nil {
-			fitnessInts = append(fitnessInts, i)
-		}
-	}
+		fil := m.df.Filter(
+			dataframe.F{Colname: "island", Comparator: series.Eq, Comparando: host},
+		)
+		sorted := fil.Arrange(
+			dataframe.RevSort("trainCylce"),
+		)
 
-	// check if fitness has improved for 'patience' rows
-	mostRecent := fitnessInts[0]
-	hasImproved := false
-	for _, v := range fitnessInts[1:] {
-		if v > mostRecent {
-			hasImproved = true
-			break
-		}
-	}
+		//get top 'patience' rows
+		recent := sorted.Subset([]int{0, min(m.patience, sorted.Nrow())})
 
-	if !hasImproved {
-		//stop training for host
-		requestURL := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/stop_training", msg.hostname)
-		res, err := http.Get(requestURL)
-		if err != nil {
-			return fmt.Errorf("error making request: %v", err)
+		fitnessCol := recent.Col("fitness")
+		fitnessValues := fitnessCol.Records()
+
+		var fitnessInts []int
+		for _, val := range fitnessValues {
+			i, err := strconv.Atoi(val)
+			if err == nil {
+				fitnessInts = append(fitnessInts, i)
+			}
 		}
 
-		//send notification
-		return fmt.Errorf("client response: status code: %d", res.StatusCode)
+		// check if fitness has improved for 'patience' rows
+		mostRecent := fitnessInts[0]
+		hasImproved := false
+		for _, v := range fitnessInts[1:] {
+			if v > mostRecent {
+				hasImproved = true
+				break
+			}
+		}
+
+		if !hasImproved {
+			//stop training for host
+			requestURL := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/stop_training", msg.Hostname)
+
+			res, err := m.HTTPClient.Get(requestURL)
+			if err != nil {
+				return fmt.Errorf("error making request: %v", err)
+			}
+
+			if res.StatusCode != http.StatusOK {
+				return fmt.Errorf("client response: status code: %d", res.StatusCode)
+			}
+
+			//send notification
+			return nil
+		}
 	}
 
 	//send metrics to prometheus
-	m.gauge.WithLabelValues(msg.hostname, "training").Set(float64(msg.fitness))
+	m.gauge.WithLabelValues(msg.Hostname, "training").Set(float64(msg.Fitness))
 
 	m.trainCycle += 1
 
@@ -152,7 +152,7 @@ func (m *Monitor) monHandler(msg message) error {
 	}
 
 	//add details to df
-	m.addRow(m.trainCycle, hostID, msg.fitness, 0, msg.hyperparameters)
+	m.addRow(m.trainCycle, hostID, msg.Fitness, 0, msg.Hyperparameters)
 	return nil
 }
 

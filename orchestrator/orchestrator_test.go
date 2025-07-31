@@ -1,111 +1,115 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"orchestrator/internal/collector"
 	"testing"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 
 	"net/http"
-	"net/http/httptest"
 )
 
-type migrationPostBody struct {
-	Fitness string
-	Body    string
+type migrationRequest struct {
+	Fitness         int                    `json:"fitness"`
+	Hyperparameters map[string]interface{} `json:"hyperparameters"`
 }
 
 type mockSQSClient struct {
-	RecMsgFunc func(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
-	DelMsgFunc func(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+	RecMsg func(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
+	DelMsg func(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
 }
 
 func (m *mockSQSClient) ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
-	return &sqs.ReceiveMessageOutput{
-		Messages: []types.Message{
-			{Body: aws.String("mock message")},
-		},
-	}, nil
+	return m.RecMsg(ctx, params, optFns...)
 }
 
 func (m *mockSQSClient) DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error) {
 	return &sqs.DeleteMessageOutput{}, nil
 }
 
-func MockServer() (*httptest.Server, *http.Client) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Printf("mock testing server request at: %v", r.URL)
-
-		if r.URL.Path != "/migrant" {
-			fmt.Printf("expected to request '/migrant', got: %s", r.URL.Path)
-		}
-
-		var req migrationPostBody
-
-		err := json.NewDecoder(r.Body).Decode(&req)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Printf("Error in POST body: %v", err)
-		}
-
-		if r.Header.Get("Accept") != "application/json" {
-			fmt.Printf("Expected Accept: application/json header, got: %s", r.Header.Get("Accept"))
-		}
-
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte(`{"value":"fixed"}`))
-	}))
-
-	client := server.Client()
-
-	return server, client
-
+type mockHTTPClientInterface struct {
+	GetReq  func(url string) (resp *http.Response, err error)
+	PostReq func(url, contentType string, body io.Reader) (resp *http.Response, err error)
 }
 
-func mockMessage(fitness int, hostname string, hyp map[string]interface{}, han string) collector.Message {
-	msg := collector.Message{}
-	msg.Fitness = fitness
-	msg.Hostname = hostname
-	msg.Hyperparameters = hyp
-	msg.MessageHandle = han
+func (m mockHTTPClientInterface) Get(url string) (*http.Response, error) {
+	return m.GetReq(url)
+}
 
-	return msg
+func (m mockHTTPClientInterface) Post(url, contentType string, body io.Reader) (*http.Response, error) {
+	return m.PostReq(url, contentType, body)
+}
+
+var sharedHttpMock = func(t *testing.T) collector.HTTPClientInterface {
+	resp := http.Response{
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Body:       io.NopCloser(bytes.NewBufferString("dummy body")),
+		Header:     make(http.Header),
+	}
+
+	t.Helper()
+
+	return mockHTTPClientInterface{
+		GetReq: func(url string) (*http.Response, error) {
+			resp.Status = "200 OK"
+			resp.StatusCode = 200
+			t.Logf("GET request made to: %s", url)
+			return &resp, nil
+		},
+		PostReq: func(url, contentType string, body io.Reader) (*http.Response, error) {
+			var r migrationRequest
+			err := json.NewDecoder(body).Decode(&r)
+			if err != nil {
+				resp.StatusCode = http.StatusBadRequest
+				return &resp, err
+			}
+			resp.Status = "200 OK"
+			resp.StatusCode = 200
+			t.Logf("POST request made to %s", url)
+			return &resp, nil
+		},
+	}
 }
 
 func TestMigHandler(t *testing.T) {
-	server, client := MockServer()
-
-	defer server.Close()
-
-	mig := collector.Migrator{}
-	mig.NewMigrator(client)
-
 	var tests = []struct {
-		name string
-		msg  collector.Message
-		want error
+		name         string
+		client       func(t *testing.T) collector.HTTPClientInterface
+		msg          collector.Message
+		totalIslands string
+		want         error
 	}{
 		//test cases
 		{
-			"single correct message",
-			collector.Message{
+			name:   "single correct message",
+			client: sharedHttpMock,
+			msg: collector.Message{
 				Fitness:         4,
 				Hostname:        "1",
 				Hyperparameters: map[string]interface{}{"h1": "test", "h2": "test"},
 				MessageHandle:   "handle",
 			},
-			nil,
+			totalIslands: "10",
+			want:         nil,
 		},
 	}
 
-	//execut subtests
+	//execute subtests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			//initialise migrator
+			mig := collector.Migrator{}
+			t.Setenv("TOTAL_ISLANDS", tt.totalIslands)
+
+			mig.NewMigrator(tt.client(t))
+
 			resp := mig.MigHandler(tt.msg)
 			if resp != tt.want {
 				t.Errorf("got %s, want %s", resp, tt.want)
@@ -116,31 +120,31 @@ func TestMigHandler(t *testing.T) {
 
 func TestMonitorHandler(t *testing.T) {
 	mon := collector.Monitor{}
-	server, client := MockServer()
-
-	mon.NewMonitor(client)
-	defer server.Close()
 
 	var tests = []struct {
-		name string
-		msg  collector.Message
-		want error
+		name   string
+		client func(t *testing.T) collector.HTTPClientInterface
+		msg    collector.Message
+		want   error
 	}{
 		//test cases
 		{
-			"single correct message",
-			collector.Message{
+			name:   "single correct message",
+			client: sharedHttpMock,
+			msg: collector.Message{
 				Fitness:         4,
 				Hostname:        "1",
 				Hyperparameters: map[string]interface{}{"h1": "test", "h2": "test"},
 				MessageHandle:   "handle",
 			},
-			nil,
+			want: nil,
 		},
 	}
 
 	//execute subtests
 	for _, tt := range tests {
+		mon.NewMonitor(tt.client(t))
+
 		t.Run(tt.name, func(t *testing.T) {
 			resp := mon.MonHandler(tt.msg)
 			if resp != tt.want {
@@ -151,31 +155,55 @@ func TestMonitorHandler(t *testing.T) {
 
 }
 
-func TestNewCollector(t *testing.T) {
+func TestCollect(t *testing.T) {
 	t.Setenv("TOTAL_ISLANDS", "4")
 	t.Setenv("WORKER_POOL", "10")
-	server, client := MockServer()
-
-	defer server.Close()
 	var tests = []struct {
-		name string
+		name       string
+		httpClient func(t *testing.T) collector.HTTPClientInterface
+		msg        string
+		msgs       int //number of messages
+		want       error
 	}{
-		{"correct test"},
+		{
+			name:       "single correct message",
+			httpClient: sharedHttpMock,
+			msg: `{
+					"Fitness": 4,
+					"Hostname": "1",
+					"Hyperparameters": {
+						"h1": "test",
+						"h2": "test"
+					},
+					"MessageHandle": "handle"
+				}`,
+			msgs: 1,
+			want: nil,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			mig := collector.Migrator{}
-			mig.NewMigrator(client)
+			mig.NewMigrator(tt.httpClient(t))
 
 			//init monitor
 			mon := collector.Monitor{}
-			mon.NewMonitor(client)
+			mon.NewMonitor(tt.httpClient(t))
 
-			var mockClient collector.SQSAPI = &mockSQSClient{}
-			println("creating new collector")
-			coll := collector.NewCollector(mockClient)
-			println("New Collector has been initalised...")
+			sqsClient := &mockSQSClient{
+				RecMsg: func(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+
+					msgs := []types.Message{}
+					for range tt.msgs {
+						m := types.Message{Body: &tt.msg}
+						msgs = append(msgs, m)
+					}
+					return &sqs.ReceiveMessageOutput{Messages: msgs}, nil
+				},
+			}
+
+			coll := collector.NewCollector(sqsClient)
 
 			workers := []*collector.Worker{mig.Worker, mon.Worker}
 			coll.Collect(workers)
