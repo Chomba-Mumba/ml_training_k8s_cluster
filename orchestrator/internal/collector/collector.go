@@ -144,7 +144,9 @@ func (c *Collector) listener(workers []*Worker, wg *sync.WaitGroup, globalQuit c
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	//TODO - logic to stop polling. Counter, Timer, etc1
 	for {
+		//poll for messages
 		result, err := c.client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.FitQueueUrl),
 			MaxNumberOfMessages: c.maxMessages,
@@ -155,6 +157,7 @@ func (c *Collector) listener(workers []*Worker, wg *sync.WaitGroup, globalQuit c
 			continue
 		}
 
+		//handle messages
 		var workersWG sync.WaitGroup
 
 		for _, m := range result.Messages {
