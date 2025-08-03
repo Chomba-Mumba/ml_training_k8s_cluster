@@ -64,7 +64,7 @@ jobs:
       - name: Terraform format
         id: fmt
         run: terraform fmt -check
-    
+
       - name: Create ECR repo [TF apply]
         shell: bash
         run: |
@@ -75,3 +75,7 @@ jobs:
             -var "aws_acc_id=$AWS_ACCOUNT_ID" \
             -auto-approve
         working-directory: terraform
+      - name:  Configure Kubectl
+        shell: bash
+        run: aws eks --region ${{ env.AWS_REGION }} update-kubeconfig \
+          --name $(terraform ouput -raw cluster name)

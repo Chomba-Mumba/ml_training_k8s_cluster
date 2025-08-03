@@ -1,11 +1,10 @@
 package collector
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -16,116 +15,98 @@ import (
 	//TODO - sort out warnings
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 type Collector struct {
-	FitQueueUrl string
-
-	SqsClient    *sqs.Client
-	maxMessages  int32
-	waitTime     int32
-	totalIslands int
-	workerPool   int32
-}
-type message struct {
-	fitness         int                    `json:"fitness"`
-	hyperparameters map[string]interface{} `json:"hyperparameters"`
-	hostname        string                 `json:"hostname"`
-	messageHandle   *string
+	FitQueueUrl    string
+	client         SQSAPI
+	maxMessages    int32
+	waitTime       int32
+	workerPoolSize int32
 }
 
-func NewCollector() Collector {
-	fQ := os.Getenv("FIT_QUEUE_URL")
+type Message struct {
+	Fitness         int                    `json:"fitness"`
+	Hyperparameters map[string]interface{} `json:"hyperparameters"`
+	Hostname        string                 `json:"hostname"`
+	MessageHandle   string
+}
 
-	tI, err := strconv.Atoi(os.Getenv("TOTAL_ISLANDS"))
-	if err != nil {
-		panic(err)
+type Worker struct {
+	source   chan Message
+	quit     chan struct{}
+	function string
+	handler  func(msg Message) error
+	close    func() error
+}
+
+type HTTPClientInterface interface {
+	Get(url string) (resp *http.Response, err error)
+	Post(url, contentType string, body io.Reader) (resp *http.Response, err error)
+}
+
+type SQSAPI interface {
+	ReceiveMessage(ctx context.Context, params *sqs.ReceiveMessageInput, optFns ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
+	DeleteMessage(ctx context.Context, params *sqs.DeleteMessageInput, optFns ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+}
+
+func dispatch(msg Message, workers []*Worker) {
+	//broadcast message to each workers source channel
+	for _, worker := range workers {
+		worker.source <- msg
 	}
+}
+
+// start go routine for each type of worker in workers slice
+func (w *Worker) StartWorker(handler func(msg Message) error, quit_channel chan struct{}, wg *sync.WaitGroup) {
+	// w.source = make(chan Message, 10) //buffer to avoid blocking
+	w.quit = quit_channel
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case msg := <-w.source:
+				handler(msg)
+			case <-w.quit:
+				return
+			}
+		}
+	}()
+	wg.Done()
+}
+
+func NewCollector(cli SQSAPI) Collector {
+	//process messages from training queues
+	fQ := os.Getenv("FIT_QUEUE_URL")
 
 	wP, err := strconv.Atoi(os.Getenv("WORKER_POOL"))
 	if err != nil {
 		panic(err)
 	}
 
-	cfg, err := config.LoadDefaultConfig(context.TODO())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	client := sqs.NewFromConfig(cfg)
-
-	c := Collector{FitQueueUrl: fQ, SqsClient: client,
-		maxMessages: 10, waitTime: 1, totalIslands: int(tI), workerPool: int32(wP)}
-
+	c := Collector{FitQueueUrl: fQ, client: cli,
+		maxMessages: 10, waitTime: 1, workerPoolSize: int32(wP)}
 	return c
 }
-func (c *Collector) findRecepient(src string) (string, error) {
-	s, err := strconv.Atoi(string(src[len(src)-1:]))
-	if err != nil {
-		return "", fmt.Errorf("Error finding recepient: %v", err)
-	}
-	return strconv.Itoa((s + 1) % c.totalIslands), nil
-}
 
-// sqs message handler
-func (c *Collector) handler(m message) error {
-	//send island to relevant island
-
-	des, err := c.findRecepient(m.hostname)
-	if err != nil {
-		return fmt.Errorf("Error in handler: %v", err)
-	}
-
-	//internal cluster endpoint
-	posturl := fmt.Sprintf("http://%s.python-service.default.svc.cluster.local:5000/receive_mirgrant", des)
-
-	h, err := json.Marshal(m.hyperparameters)
-	if err != nil {
-		return fmt.Errorf("Error in handler: %v", err)
-	}
-
-	body := []byte(fmt.Sprintf(`{
-		"fitness": %d,
-		"body": %s
-		}`, m.fitness, h))
-
-	r, err := http.NewRequest("POST", posturl, bytes.NewBuffer(body))
-	if err != nil {
-		panic(err)
-	}
-
-	r.Header.Add("Content-Type", "application/json")
-	client := &http.Client{}
-	res, err := client.Do(r)
-	if err != nil {
-		panic(err)
-	}
-
-	if res.StatusCode != http.StatusOK {
-		panic(res.Status)
-	}
-
-	return nil
-}
-
-func newMessage(response types.Message) message {
-	// receive message in JSON format and return s
+func newMessage(response types.Message) Message {
+	// receive message in JSON format and return parsed message item
 	body := response.Body
-	m := message{}
+	m := Message{}
 	json.Unmarshal([]byte(*body), &m)
 	return m
 }
 
-func (c *Collector) delete(m message) error {
+func (c *Collector) delete(m Message) error {
 	// remove message from sqs queue
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := c.SqsClient.DeleteMessage(ctx, &sqs.DeleteMessageInput{
+	_, err := c.client.DeleteMessage(ctx, &sqs.DeleteMessageInput{
 		QueueUrl:      &c.FitQueueUrl,
-		ReceiptHandle: m.messageHandle,
+		ReceiptHandle: &m.MessageHandle,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to delete message from sqs queue:%v", err)
@@ -133,38 +114,68 @@ func (c *Collector) delete(m message) error {
 	return nil
 }
 
-func (c *Collector) Collect() {
-	//create go routine for workers consuming messages from sqs
-	for w := 1; w <= int(c.workerPool); w++ {
-		go c.worker(w)
+func (c *Collector) Collect(workers []*Worker) {
+	globalQuit := make(chan struct{})
+
+	fmt.Printf("Polling SQS Queue...")
+
+	var wg sync.WaitGroup
+
+	//pool of listeners
+	for w := 1; w <= int(c.workerPoolSize); w++ {
+		wg.Add(1)
+		go c.listener(workers, &wg, globalQuit)
 	}
+
+	wg.Wait()
+	close(globalQuit)
+
+	//aggregate results from monitor
+	for _, w := range workers {
+		if w.function == "monitor" {
+			w.close()
+			break
+		}
+	}
+
 }
 
-func (c *Collector) worker(id int) {
+func (c *Collector) listener(workers []*Worker, wg *sync.WaitGroup, globalQuit chan struct{}) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
+	//TODO - logic to stop polling. Counter, Timer, etc1
 	for {
-		result, err := c.SqsClient.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
+		//poll for messages
+		result, err := c.client.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.FitQueueUrl),
 			MaxNumberOfMessages: c.maxMessages,
 			WaitTimeSeconds:     c.waitTime,
 		})
+
 		if err != nil {
 			continue
 		}
-		var wg sync.WaitGroup
+
+		//handle messages
+		var workersWG sync.WaitGroup
+
 		for _, m := range result.Messages {
-			wg.Add(1)
-			go func(m message) {
-				defer wg.Done()
-				if err := c.handler(m); err != nil {
-					log.Printf("Error handling request: %v", err)
-					return
-				}
-				c.delete(m)
-			}(newMessage(m))
+			//start different types of workers (in go routines)
+			for _, w := range workers {
+				workersWG.Add(1)
+				w.StartWorker(w.handler, globalQuit, &workersWG)
+			}
+
+			// send messages to workers job channels
+			msg := newMessage(m)
+			dispatch(msg, workers)
+
+			//fully process message and terminate
+			workersWG.Wait()
+			c.delete(msg)
 		}
-		wg.Wait()
+
+		wg.Done()
 	}
 }

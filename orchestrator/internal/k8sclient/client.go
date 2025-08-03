@@ -25,7 +25,7 @@ type K8sClient struct {
 	client kubernetes.Interface
 }
 
-func NewK8sClient(kubeconfigPath string) (*K8sClient, error) {
+func NewK8sClient() (*K8sClient, error) {
 	var kubeconfig *rest.Config
 
 	// use cluster service account to get config object
